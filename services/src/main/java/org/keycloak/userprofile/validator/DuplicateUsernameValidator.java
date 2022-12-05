@@ -16,10 +16,13 @@
  */
 package org.keycloak.userprofile.validator;
 
+import javax.ws.rs.core.Response;
 import java.util.List;
 
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.services.messages.Messages;
 import org.keycloak.services.validation.Validation;
 import org.keycloak.userprofile.UserProfileAttributeValidationContext;
@@ -62,8 +65,11 @@ public class DuplicateUsernameValidator implements SimpleValidator {
         UserModel existing = session.users().getUserByUsername(session.getContext().getRealm(), value);
         UserModel user = UserProfileAttributeValidationContext.from(context).getAttributeContext().getUser();
 
+        if (! KeycloakModelUtils.isUsernameCaseSensitive(session.getContext().getRealm())) value = value.toLowerCase();
+
         if (user != null && !value.equals(user.getFirstAttribute(UserModel.USERNAME)) && (existing != null && !existing.getId().equals(user.getId()))) {
-            context.addError(new ValidationError(ID, inputHint, Messages.USERNAME_EXISTS));
+            context.addError(new ValidationError(ID, inputHint, Messages.USERNAME_EXISTS)
+                .setStatusCode(Response.Status.CONFLICT));
         }
 
         return context;

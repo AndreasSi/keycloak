@@ -17,7 +17,7 @@
 
 package org.keycloak.services.clientpolicy.executor;
 
-import org.jboss.resteasy.spi.HttpRequest;
+import org.keycloak.http.HttpRequest;
 
 import org.keycloak.OAuth2Constants;
 import org.keycloak.OAuthErrorException;
@@ -81,7 +81,7 @@ public class HolderOfKeyEnforcerExecutor implements ClientPolicyExecutorProvider
 
     @Override
     public void executeOnEvent(ClientPolicyContext context) throws ClientPolicyException {
-        HttpRequest request = session.getContext().getContextObject(HttpRequest.class);
+        HttpRequest request = session.getContext().getHttpRequest();
         switch (context.getEvent()) {
             case REGISTER:
             case UPDATE:
@@ -90,6 +90,8 @@ public class HolderOfKeyEnforcerExecutor implements ClientPolicyExecutorProvider
                 validate(clientUpdateContext.getProposedClientRepresentation());
                 break;
             case TOKEN_REQUEST:
+            case SERVICE_ACCOUNT_TOKEN_REQUEST:
+            case BACKCHANNEL_TOKEN_REQUEST:
                 AccessToken.CertConf certConf = MtlsHoKTokenUtil.bindTokenWithClientCertificate(request, session);
                 if (certConf == null) {
                     throw new ClientPolicyException(OAuthErrorException.INVALID_REQUEST, "Client Certification missing for MTLS HoK Token Binding");

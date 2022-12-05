@@ -42,27 +42,32 @@ public final class AttributeMetadata {
     public static final Predicate<AttributeContext> ALWAYS_FALSE = context -> false;
 
     private final String attributeName;
+    private String attributeDisplayName;
+    private AttributeGroupMetadata attributeGroupMetadata;
     private final Predicate<AttributeContext> selector;
-    private final Predicate<AttributeContext> readOnly;
+    private final List<Predicate<AttributeContext>> writeAllowed = new ArrayList<>();
     /** Predicate to decide if attribute is required, it is handled as required if predicate is null */
     private final Predicate<AttributeContext> required;
+    private final List<Predicate<AttributeContext>> readAllowed = new ArrayList<>();
     private List<AttributeValidatorMetadata> validators;
     private Map<String, Object> annotations;
+    private int guiOrder;
+    
 
-    AttributeMetadata(String attributeName) {
-        this(attributeName, ALWAYS_TRUE, ALWAYS_FALSE, ALWAYS_TRUE);
+    AttributeMetadata(String attributeName, int guiOrder) {
+        this(attributeName, guiOrder, ALWAYS_TRUE, ALWAYS_TRUE, ALWAYS_TRUE, ALWAYS_TRUE);
     }
 
-    AttributeMetadata(String attributeName, Predicate<AttributeContext> readOnly, Predicate<AttributeContext> required) {
-        this(attributeName, ALWAYS_TRUE, readOnly, required);
+    AttributeMetadata(String attributeName, int guiOrder, Predicate<AttributeContext> writeAllowed, Predicate<AttributeContext> required) {
+        this(attributeName, guiOrder, ALWAYS_TRUE, writeAllowed, required, ALWAYS_TRUE);
     }
 
-    AttributeMetadata(String attributeName, Predicate<AttributeContext> selector) {
-        this(attributeName, selector, ALWAYS_FALSE, ALWAYS_TRUE);
+    AttributeMetadata(String attributeName, int guiOrder, Predicate<AttributeContext> selector) {
+        this(attributeName, guiOrder, selector, ALWAYS_FALSE, ALWAYS_TRUE, ALWAYS_TRUE);
     }
 
-    AttributeMetadata(String attributeName, List<String> scopes, Predicate<AttributeContext> readOnly, Predicate<AttributeContext> required) {
-        this(attributeName, context -> {
+    AttributeMetadata(String attributeName, int guiOrder, List<String> scopes, Predicate<AttributeContext> writeAllowed, Predicate<AttributeContext> required) {
+        this(attributeName, guiOrder, context -> {
             KeycloakSession session = context.getSession();
             AuthenticationSessionModel authSession = session.getContext().getAuthenticationSession();
 
@@ -81,29 +86,78 @@ public final class AttributeMetadata {
 
             return authSession.getClientScopes().stream()
                     .map(id -> clientScopes.getClientScopeById(realm, id).getName()).anyMatch(scopes::contains);
-        }, readOnly, required);
+        }, writeAllowed, required, ALWAYS_TRUE);
     }
 
-    AttributeMetadata(String attributeName, Predicate<AttributeContext> selector, Predicate<AttributeContext> readOnly, Predicate<AttributeContext> required) {
+    AttributeMetadata(String attributeName, int guiOrder, Predicate<AttributeContext> selector, Predicate<AttributeContext> writeAllowed,
+            Predicate<AttributeContext> required,
+            Predicate<AttributeContext> readAllowed) {
         this.attributeName = attributeName;
+        this.guiOrder = guiOrder;
         this.selector = selector;
-        this.readOnly = readOnly;
+        addWriteCondition(writeAllowed);
         this.required = required;
+        addReadCondition(readAllowed);
+    }
+
+    AttributeMetadata(String attributeName, int guiOrder, Predicate<AttributeContext> selector, List<Predicate<AttributeContext>> writeAllowed,
+                      Predicate<AttributeContext> required,
+                      List<Predicate<AttributeContext>> readAllowed) {
+        this.attributeName = attributeName;
+        this.guiOrder = guiOrder;
+        this.selector = selector;
+        this.writeAllowed.addAll(writeAllowed);
+        this.required = required;
+        this.readAllowed.addAll(readAllowed);
     }
 
     public String getName() {
         return attributeName;
     }
 
+    public int getGuiOrder() {
+        return guiOrder;
+    }
+
+    public AttributeMetadata setGuiOrder(int guiOrder) {
+        this.guiOrder = guiOrder;
+        return this;
+    }
+
+    public AttributeGroupMetadata getAttributeGroupMetadata() {
+        return attributeGroupMetadata;
+    }
+
     public boolean isSelected(AttributeContext context) {
         return selector.test(context);
     }
 
-    public boolean isReadOnly(AttributeContext context) {
-        return readOnly.test(context);
+    private boolean allConditionsMet(List<Predicate<AttributeContext>> predicates, AttributeContext context) {
+        return predicates.stream().allMatch(p -> p.test(context));
     }
 
-    /** 
+    public AttributeMetadata addReadCondition(Predicate<AttributeContext> readAllowed) {
+        this.readAllowed.add(readAllowed);
+        return this;
+    }
+
+    public AttributeMetadata addWriteCondition(Predicate<AttributeContext> writeAllowed) {
+        this.writeAllowed.add(writeAllowed);
+        return this;
+    }
+    public boolean isReadOnly(AttributeContext context) {
+        return !canEdit(context);
+    }
+
+    public boolean canView(AttributeContext context) {
+        return allConditionsMet(readAllowed, context);
+    }
+
+    public boolean canEdit(AttributeContext context) {
+        return allConditionsMet(writeAllowed, context);
+    }
+
+    /**
      * Check if attribute is required based on it's predicate, it is handled as required if predicate is null
      * @param context to evaluate requirement of the attribute from
      * @return true if attribute is required in provided context
@@ -121,13 +175,9 @@ public final class AttributeMetadata {
             this.validators = new ArrayList<>();
         }
 
+        this.validators.removeIf(validators::contains);
         this.validators.addAll(validators.stream().filter(Objects::nonNull).collect(Collectors.toList()));
 
-        return this;
-    }
-
-    public AttributeMetadata addValidator(AttributeValidatorMetadata validator) {
-        addValidator(Arrays.asList(validator));
         return this;
     }
 
@@ -140,7 +190,7 @@ public final class AttributeMetadata {
             if(this.annotations == null) {
                 this.annotations = new HashMap<>();
             }
-            
+
             this.annotations.putAll(annotations);
         }
         return this;
@@ -148,7 +198,7 @@ public final class AttributeMetadata {
 
     @Override
     public AttributeMetadata clone() {
-        AttributeMetadata cloned = new AttributeMetadata(attributeName, selector, readOnly, required);
+        AttributeMetadata cloned = new AttributeMetadata(attributeName, guiOrder, selector, writeAllowed, required, readAllowed);
         // we clone validators list to allow adding or removing validators. Validators
         // itself are not cloned as we do not expect them to be reconfigured.
         if (validators != null) {
@@ -158,6 +208,43 @@ public final class AttributeMetadata {
         if(annotations != null) {
             cloned.addAnnotations(annotations);
         }
+        cloned.setAttributeDisplayName(attributeDisplayName);
+        if (attributeGroupMetadata != null) {
+            cloned.setAttributeGroupMetadata(attributeGroupMetadata.clone());
+        }
         return cloned;
+    }
+    
+    public String getAttributeDisplayName() {
+        if(attributeDisplayName == null || attributeDisplayName.trim().isEmpty())
+            return attributeName;
+        return attributeDisplayName;
+    }
+
+    public AttributeMetadata setAttributeDisplayName(String attributeDisplayName) {
+        if(attributeDisplayName != null)
+            this.attributeDisplayName = attributeDisplayName;
+        return this;
+    }
+
+    public AttributeMetadata setAttributeGroupMetadata(AttributeGroupMetadata attributeGroupMetadata) {
+        if(attributeGroupMetadata != null)
+            this.attributeGroupMetadata = attributeGroupMetadata;
+        return this;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || !(o instanceof AttributeMetadata)) return false;
+
+        AttributeMetadata that = (AttributeMetadata) o;
+
+        return that.getName().equals(getName());
+    }
+
+    @Override
+    public int hashCode() {
+        return attributeName.hashCode();
     }
 }
