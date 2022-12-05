@@ -18,7 +18,6 @@ package org.keycloak.services.resources.admin;
 
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.annotations.cache.NoCache;
-import org.jboss.resteasy.spi.ResteasyProviderFactory;
 import org.keycloak.authentication.RequiredActionProvider;
 import org.keycloak.authentication.actiontoken.execactions.ExecuteActionsActionToken;
 import org.keycloak.common.ClientConnection;
@@ -50,6 +49,7 @@ import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.models.utils.RepresentationToModel;
+import org.keycloak.models.utils.RoleUtils;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.utils.RedirectUtils;
 import org.keycloak.provider.ProviderFactory;
@@ -91,7 +91,6 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
@@ -128,27 +127,27 @@ import static org.keycloak.utils.LockObjectsForModification.lockUserSessionsForM
 public class UserResource {
     private static final Logger logger = Logger.getLogger(UserResource.class);
 
-    protected RealmModel realm;
+    protected final RealmModel realm;
 
-    private AdminPermissionEvaluator auth;
+    private final AdminPermissionEvaluator auth;
 
-    private AdminEventBuilder adminEvent;
-    private UserModel user;
+    private final AdminEventBuilder adminEvent;
+    private final UserModel user;
 
-    @Context
-    protected ClientConnection clientConnection;
+    protected final ClientConnection clientConnection;
 
-    @Context
-    protected KeycloakSession session;
+    protected final KeycloakSession session;
 
-    @Context
-    protected HttpHeaders headers;
+    protected final HttpHeaders headers;
     
-    public UserResource(RealmModel realm, UserModel user, AdminPermissionEvaluator auth, AdminEventBuilder adminEvent) {
+    public UserResource(KeycloakSession session, UserModel user, AdminPermissionEvaluator auth, AdminEventBuilder adminEvent) {
+        this.session = session;
         this.auth = auth;
-        this.realm = realm;
+        this.realm = session.getContext().getRealm();
+        this.clientConnection = session.getContext().getConnection();
         this.user = user;
         this.adminEvent = adminEvent.resource(ResourceType.USER);
+        this.headers = session.getContext().getRequestHeaders();
     }
     
     /**
@@ -173,7 +172,17 @@ public class UserResource {
                 wasPermanentlyLockedOut = session.getProvider(BruteForceProtector.class).isPermanentlyLockedOut(session, realm, user);
             }
 
-            UserProfile profile = session.getProvider(UserProfileProvider.class).create(USER_API, rep.toAttributes(), user);
+            Map<String, List<String>> attributes = new HashMap<>(rep.toAttributes());
+
+            if (rep.getAttributes() == null) {
+                // include existing attributes in case no attributes are set so that validation takes into account the existing
+                // attributes associated with the user
+                for (Map.Entry<String, List<String>> entry : user.getAttributes().entrySet()) {
+                    attributes.putIfAbsent(entry.getKey(), entry.getValue());
+                }
+            }
+
+            UserProfile profile = session.getProvider(UserProfileProvider.class).create(USER_API, attributes, user);
 
             Response response = validateUserProfile(profile, user, session);
             if (response != null) {
@@ -315,8 +324,8 @@ public class UserResource {
         if (authenticatedRealm.getId().equals(realm.getId()) && sessionState != null) {
             sameRealm = true;
             UserSessionModel userSession = lockUserSessionsForModification(session, () -> session.sessions().getUserSession(authenticatedRealm, sessionState));
-            AuthenticationManager.expireIdentityCookie(realm, session.getContext().getUri(), clientConnection);
-            AuthenticationManager.expireRememberMeCookie(realm, session.getContext().getUri(), clientConnection);
+            AuthenticationManager.expireIdentityCookie(realm, session.getContext().getUri(), session);
+            AuthenticationManager.expireRememberMeCookie(realm, session.getContext().getUri(), session);
             AuthenticationManager.backchannelLogout(session, authenticatedRealm, userSession, session.getContext().getUri(), clientConnection, headers, true);
         }
         EventBuilder event = new EventBuilder(realm, session, clientConnection);
@@ -570,10 +579,7 @@ public class UserResource {
     public RoleMapperResource getRoleMappings() {
         AdminPermissionEvaluator.RequirePermissionCheck manageCheck = () -> auth.users().requireMapRoles(user);
         AdminPermissionEvaluator.RequirePermissionCheck viewCheck = () -> auth.users().requireView(user);
-        RoleMapperResource resource =  new RoleMapperResource(realm, auth, user, adminEvent, manageCheck, viewCheck);
-        ResteasyProviderFactory.getInstance().injectProperties(resource);
-        return resource;
-
+        return new RoleMapperResource(session, auth, user, adminEvent, manageCheck, viewCheck);
     }
 
     /**
@@ -933,7 +939,7 @@ public class UserResource {
             throw new NotFoundException("Group not found");
         }
         auth.groups().requireManageMembership(group);
-        if (!user.isMemberOf(group)){
+        if (!RoleUtils.isDirectMember(user.getGroupsStream(),group)){
             user.joinGroup(group);
             adminEvent.operation(OperationType.CREATE).resource(ResourceType.GROUP_MEMBERSHIP).representation(ModelToRepresentation.toRepresentation(group, true)).resourcePath(session.getContext().getUri()).success();
         }

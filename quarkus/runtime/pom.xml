@@ -77,7 +77,11 @@
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-smallrye-metrics</artifactId>
+            <artifactId>quarkus-micrometer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
@@ -148,7 +152,17 @@
         </dependency>
         <dependency>
             <groupId>org.keycloak</groupId>
-            <artifactId>${keycloak.crypto.artifactId}</artifactId>
+            <artifactId>keycloak-crypto-default</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-crypto-fips1402</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.keycloak</groupId>
@@ -323,6 +337,16 @@
         <dependency>
             <groupId>org.keycloak</groupId>
             <artifactId>keycloak-model-map-hot-rod</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-model-map-file</artifactId>
             <exclusions>
                 <exclusion>
                     <groupId>*</groupId>

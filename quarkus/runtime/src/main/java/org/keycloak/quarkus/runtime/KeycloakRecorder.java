@@ -20,6 +20,7 @@ package org.keycloak.quarkus.runtime;
 import java.lang.annotation.Annotation;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 
@@ -32,12 +33,13 @@ import liquibase.Scope;
 
 import org.hibernate.cfg.AvailableSettings;
 import org.infinispan.manager.DefaultCacheManager;
-import io.quarkus.smallrye.metrics.runtime.SmallRyeMetricsHandler;
-import io.vertx.core.Handler;
 import io.vertx.ext.web.RoutingContext;
 
 import org.keycloak.Config;
 import org.keycloak.common.Profile;
+import org.keycloak.common.crypto.CryptoIntegration;
+import org.keycloak.common.crypto.CryptoProvider;
+import org.keycloak.common.crypto.FipsMode;
 import org.keycloak.quarkus.runtime.configuration.Configuration;
 import org.keycloak.quarkus.runtime.configuration.MicroProfileConfigProvider;
 import org.keycloak.quarkus.runtime.integration.QuarkusKeycloakSessionFactory;
@@ -60,6 +62,14 @@ public class KeycloakRecorder {
     public static final String DEFAULT_HEALTH_ENDPOINT = "/health";
     public static final String DEFAULT_METRICS_ENDPOINT = "/metrics";
 
+    public void initConfig() {
+        Config.init(new MicroProfileConfigProvider());
+    }
+
+    public void configureProfile(Profile.ProfileName profileName, Map<Profile.Feature, Boolean> features) {
+        Profile.init(profileName, features);
+    }
+
     public void configureLiquibase(Map<String, List<String>> services) {
         ServiceLocator locator = Scope.getCurrentScope().getServiceLocator();
         if (locator instanceof FastServiceLocator)
@@ -70,9 +80,7 @@ public class KeycloakRecorder {
             Map<Spi, Map<Class<? extends Provider>, Map<String, Class<? extends ProviderFactory>>>> factories,
             Map<Class<? extends Provider>, String> defaultProviders,
             Map<String, ProviderFactory> preConfiguredProviders,
-            List<ClasspathThemeProviderFactory.ThemesRepresentation> themes, Boolean reaugmented) {
-        Config.init(new MicroProfileConfigProvider());
-        Profile.setInstance(new QuarkusProfile());
+            List<ClasspathThemeProviderFactory.ThemesRepresentation> themes, boolean reaugmented) {
         QuarkusKeycloakSessionFactory.setInstance(new QuarkusKeycloakSessionFactory(factories, defaultProviders, preConfiguredProviders, themes, reaugmented));
     }
 
@@ -106,12 +114,6 @@ public class KeycloakRecorder {
         });
     }
 
-    public Handler<RoutingContext> createMetricsHandler(String path) {
-        SmallRyeMetricsHandler metricsHandler = new SmallRyeMetricsHandler();
-        metricsHandler.setMetricsPath(path);
-        return metricsHandler;
-    }
-
     public HibernateOrmIntegrationRuntimeInitListener createUserDefinedUnitListener(String name) {
         return new HibernateOrmIntegrationRuntimeInitListener() {
             @Override
@@ -140,19 +142,42 @@ public class KeycloakRecorder {
         };
     }
 
-    public QuarkusRequestFilter createRequestFilter(boolean healthOrMetricsEnabled) {
-        Predicate<RoutingContext> ignoreContext = null;
+    public QuarkusRequestFilter createRequestFilter(List<String> ignoredPaths, ExecutorService executor) {
+        return new QuarkusRequestFilter(createIgnoredHttpPathsPredicate(ignoredPaths), executor);
+    }
 
-        if (healthOrMetricsEnabled) {
-            // ignore metrics and health endpoints because they execute in their own worker thread
-            ignoreContext = new Predicate<>() {
-                @Override
-                public boolean test(RoutingContext context) {
-                    return context.request().uri().startsWith("/health") || context.request().uri().startsWith("/metrics");
-                }
-            };
+    private Predicate<RoutingContext> createIgnoredHttpPathsPredicate(List<String> ignoredPaths) {
+        if (ignoredPaths == null || ignoredPaths.isEmpty()) {
+            return null;
         }
 
-        return new QuarkusRequestFilter(ignoreContext);
+        return new Predicate<>() {
+            @Override
+            public boolean test(RoutingContext context) {
+                for (String ignoredPath : ignoredPaths) {
+                    if (context.request().uri().startsWith(ignoredPath)) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        };
+    }
+
+    public void setCryptoProvider(FipsMode fipsMode) {
+        String cryptoProvider = fipsMode.getProviderClassName();
+
+        try {
+            CryptoIntegration.setProvider(
+                    (CryptoProvider) Thread.currentThread().getContextClassLoader().loadClass(cryptoProvider).getDeclaredConstructor().newInstance());
+        } catch (ClassNotFoundException | NoClassDefFoundError cause) {
+            if (fipsMode.isFipsEnabled()) {
+                throw new RuntimeException("Failed to configure FIPS. Make sure you have added the Bouncy Castle FIPS dependencies to the 'providers' directory.");
+            }
+            throw new RuntimeException("Unexpected error when configuring the crypto provider: " + cryptoProvider, cause);
+        } catch (Exception cause) {
+            throw new RuntimeException("Unexpected error when configuring the crypto provider: " + cryptoProvider, cause);
+        }
     }
 }

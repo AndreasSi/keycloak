@@ -48,12 +48,12 @@ import org.keycloak.services.clientpolicy.ClientPolicyManager;
 import org.keycloak.models.LegacySessionSupportProvider;
 import org.keycloak.sessions.AuthenticationSessionProvider;
 import org.keycloak.storage.DatastoreProvider;
-import org.keycloak.storage.federated.UserFederatedStorageProvider;
 import org.keycloak.vault.DefaultVaultTranscriber;
 import org.keycloak.vault.VaultProvider;
 import org.keycloak.vault.VaultTranscriber;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -70,7 +70,6 @@ import java.util.stream.Collectors;
  */
 public class DefaultKeycloakSession implements KeycloakSession {
 
-    private final static Logger log = Logger.getLogger(DefaultKeycloakSession.class);
     private final DefaultKeycloakSessionFactory factory;
     private final Map<Integer, Provider> providers = new HashMap<>();
     private final List<Provider> closable = new LinkedList<>();
@@ -83,7 +82,6 @@ public class DefaultKeycloakSession implements KeycloakSession {
     private UserSessionProvider sessionProvider;
     private UserLoginFailureProvider userLoginFailureProvider;
     private AuthenticationSessionProvider authenticationSessionProvider;
-    private UserFederatedStorageProvider userFederatedStorageProvider;
     private final KeycloakContext context;
     private KeyManager keyManager;
     private ThemeManager themeManager;
@@ -91,10 +89,12 @@ public class DefaultKeycloakSession implements KeycloakSession {
     private VaultTranscriber vaultTranscriber;
     private ClientPolicyManager clientPolicyManager;
 
+    private boolean closed;
+
     public DefaultKeycloakSession(DefaultKeycloakSessionFactory factory) {
         this.factory = factory;
         this.transactionManager = new DefaultKeycloakTransactionManager(this);
-        context = new DefaultKeycloakContext(this);
+        context = createKeycloakContext(this);
     }
 
     @Override
@@ -129,6 +129,11 @@ public class DefaultKeycloakSession implements KeycloakSession {
 
     @Override
     public void enlistForClose(Provider provider) {
+        for (Provider p : closable) {
+            if (p == provider) {    // Do not add the same provider twice
+                return;
+            }
+        }
         closable.add(provider);
     }
 
@@ -155,6 +160,11 @@ public class DefaultKeycloakSession implements KeycloakSession {
     }
 
     @Override
+    public Map<String, Object> getAttributes() {
+        return Collections.unmodifiableMap(attributes);
+    }
+
+    @Override
     public KeycloakTransactionManager getTransactionManager() {
         return transactionManager;
     }
@@ -162,15 +172,6 @@ public class DefaultKeycloakSession implements KeycloakSession {
     @Override
     public KeycloakSessionFactory getKeycloakSessionFactory() {
         return factory;
-    }
-
-    @Override
-    @Deprecated
-    public UserFederatedStorageProvider userFederatedStorage() {
-        if (userFederatedStorageProvider == null) {
-            userFederatedStorageProvider = getProvider(UserFederatedStorageProvider.class);
-        }
-        return userFederatedStorageProvider;
     }
 
     @Override
@@ -451,7 +452,11 @@ public class DefaultKeycloakSession implements KeycloakSession {
         return clientPolicyManager;
     }
 
+    @Override
     public void close() {
+        if (closed) {
+            throw new IllegalStateException("Illegal call to #close() on already closed KeycloakSession");
+        }
         Consumer<? super Provider> safeClose = p -> {
             try {
                 p.close();
@@ -464,6 +469,14 @@ public class DefaultKeycloakSession implements KeycloakSession {
         for (Entry<InvalidableObjectType, Set<Object>> me : invalidationMap.entrySet()) {
             factory.invalidate(this, me.getKey(), me.getValue().toArray());
         }
+        closed = true;
     }
 
+    public boolean isClosed() {
+        return closed;
+    }
+
+    protected DefaultKeycloakContext createKeycloakContext(KeycloakSession session) {
+        return new DefaultKeycloakContext(session);
+    }
 }

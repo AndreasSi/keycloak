@@ -63,7 +63,6 @@ import org.keycloak.services.clientpolicy.condition.AnyClientConditionFactory;
 import org.keycloak.services.clientpolicy.condition.ClientUpdaterContextConditionFactory;
 import org.keycloak.testsuite.Assert;
 import org.keycloak.testsuite.admin.ApiUtil;
-import org.keycloak.testsuite.arquillian.annotation.AuthServerContainerExclude;
 import org.keycloak.testsuite.client.resources.TestApplicationResourceUrls;
 import org.keycloak.testsuite.client.resources.TestOIDCEndpointsApplicationResource;
 import org.keycloak.testsuite.pages.AppPage;
@@ -104,7 +103,6 @@ import static org.keycloak.testsuite.util.ClientPoliciesUtil.createClientUpdateC
  *
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
  */
-@AuthServerContainerExclude(AuthServerContainerExclude.AuthServer.REMOTE)
 public class FAPI1Test extends AbstractClientPoliciesTest {
 
     @Page
@@ -618,6 +616,7 @@ public class FAPI1Test extends AbstractClientPoliciesTest {
             OIDCAdvancedConfigWrapper clientConfig = OIDCAdvancedConfigWrapper.fromClientRepresentation(clientRep);
             clientConfig.setRequestUris(Collections.singletonList(TestApplicationResourceUrls.clientRequestUri()));
             clientConfig.setTlsClientAuthSubjectDn("EMAILADDRESS=contact@keycloak.org, CN=Keycloak Intermediate CA, OU=Keycloak, O=Red Hat, ST=MA, C=US");
+            clientConfig.setAllowRegexPatternComparison(false);
         });
         ClientResource clientResource = adminClient.realm(REALM_NAME).clients().get(clientUUID);
         ClientRepresentation client = clientResource.toRepresentation();

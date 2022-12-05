@@ -18,8 +18,7 @@ package org.keycloak.services.resources;
 
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.annotations.cache.NoCache;
-import org.jboss.resteasy.spi.HttpRequest;
-import org.jboss.resteasy.spi.ResteasyProviderFactory;
+import org.keycloak.http.HttpRequest;
 import org.keycloak.OAuthErrorException;
 import org.keycloak.authentication.AuthenticationProcessor;
 import org.keycloak.authentication.authenticators.broker.AbstractIdpAuthenticator;
@@ -45,6 +44,7 @@ import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
 import org.keycloak.events.EventBuilder;
 import org.keycloak.events.EventType;
+import org.keycloak.locale.LocaleSelectorProvider;
 import org.keycloak.models.AccountRoles;
 import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.AuthenticationFlowModel;
@@ -98,7 +98,6 @@ import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
@@ -115,6 +114,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -132,26 +132,26 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
 
     private final RealmModel realmModel;
 
-    @Context
-    private KeycloakSession session;
+    private final KeycloakSession session;
 
-    @Context
-    private ClientConnection clientConnection;
+    private final ClientConnection clientConnection;
 
-    @Context
-    private HttpRequest request;
+    private final HttpRequest request;
 
-    @Context
-    private HttpHeaders headers;
+    private final HttpHeaders headers;
 
     private EventBuilder event;
 
 
-    public IdentityBrokerService(RealmModel realmModel) {
+    public IdentityBrokerService(KeycloakSession session) {
+        this.session = session;
+        this.clientConnection= session.getContext().getConnection();
+        realmModel = session.getContext().getRealm();
         if (realmModel == null) {
             throw new IllegalArgumentException("Realm can not be null.");
         }
-        this.realmModel = realmModel;
+        this.request = session.getContext().getHttpRequest();
+        this.headers = session.getContext().getRequestHeaders();
     }
 
     public void init() {
@@ -416,9 +416,7 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
             throw new NotFoundException(e.getMessage());
         }
 
-        Object callback = identityProvider.callback(realmModel, this, event);
-        ResteasyProviderFactory.getInstance().injectProperties(callback);
-        return callback;
+        return identityProvider.callback(realmModel, this, event);
     }
 
     @Path("{provider_id}/token")
@@ -576,8 +574,11 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
             logger.debug("Redirecting to flow for firstBrokerLogin");
 
             boolean forwardedPassiveLogin = "true".equals(authenticationSession.getAuthNote(AuthenticationProcessor.FORWARDED_PASSIVE_LOGIN));
+
+            Map<String, String> extractedAuthNotes = extractAuthNotesFromSession(authenticationSession);
             // Redirect to firstBrokerLogin after successful login and ensure that previous authentication state removed
             AuthenticationProcessor.resetFlow(authenticationSession, LoginActionsService.FIRST_BROKER_LOGIN_PATH);
+            extractedAuthNotes.forEach(authenticationSession::setAuthNote);
 
             // Set the FORWARDED_PASSIVE_LOGIN note (if needed) after resetting the session so it is not lost.
             if (forwardedPassiveLogin) {
@@ -608,6 +609,18 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
 
             return finishOrRedirectToPostBrokerLogin(authenticationSession, context, false);
         }
+    }
+
+    private Map<String, String> extractAuthNotesFromSession(AuthenticationSessionModel authenticationSession) {
+        return Stream.of(
+            LocaleSelectorProvider.USER_REQUEST_LOCALE,
+            LocaleSelectorProvider.CLIENT_REQUEST_LOCALE
+        )
+            .filter(it -> authenticationSession.getAuthNote(it) != null)
+            .collect(Collectors.toMap(
+                Function.identity(),
+                authenticationSession::getAuthNote
+            ));
     }
 
 
@@ -974,6 +987,14 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
 
         if (context.getIdpConfig().getSyncMode() == IdentityProviderSyncMode.FORCE) {
             setBasicUserAttributes(context, federatedUser);
+
+            if (!Objects.equals(context.getUsername(), federatedIdentityModel.getUserName())) {
+                federatedIdentityModel = new FederatedIdentityModel(federatedIdentityModel.getIdentityProvider(),
+                        federatedIdentityModel.getUserId(), context.getUsername(),
+                        federatedIdentityModel.getToken());
+
+                this.session.users().updateFederatedIdentity(this.realmModel, federatedUser, federatedIdentityModel);
+            }
         }
 
         // Skip DB write if tokens are null or equal
@@ -1024,7 +1045,7 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
 
     @Override
     public AuthenticationSessionModel getAndVerifyAuthenticationSession(String encodedCode) {
-        IdentityBrokerState state = IdentityBrokerState.encoded(encodedCode);
+        IdentityBrokerState state = IdentityBrokerState.encoded(encodedCode, realmModel);
         String code = state.getDecodedState();
         String clientId = state.getClientId();
         String tabId = state.getTabId();
@@ -1115,7 +1136,7 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
         if (clientSessionCode != null) {
             authSession = clientSessionCode.getClientSession();
             String relayState = clientSessionCode.getOrGenerateCode();
-            encodedState = IdentityBrokerState.decoded(relayState, authSession.getClient().getClientId(), authSession.getTabId());
+            encodedState = IdentityBrokerState.decoded(relayState, authSession.getClient().getId(), authSession.getClient().getClientId(), authSession.getTabId());
         }
 
         return new AuthenticationRequest(this.session, this.realmModel, authSession, this.request, this.session.getContext().getUri(), encodedState, getRedirectUri(providerId));
@@ -1186,7 +1207,7 @@ public class IdentityBrokerService implements IdentityProvider.AuthenticationCal
         if (errorMessage != null) processor.setForwardedErrorMessage(new FormMessage(null, errorMessage));
 
         try {
-            CacheControlUtil.noBackButtonCacheControlHeader();
+            CacheControlUtil.noBackButtonCacheControlHeader(session);
             return processor.authenticate();
         } catch (Exception e) {
             return processor.handleBrowserException(e);

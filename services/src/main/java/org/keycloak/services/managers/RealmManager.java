@@ -35,6 +35,7 @@ import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionProvider;
 import org.keycloak.models.utils.DefaultAuthenticationFlows;
 import org.keycloak.models.utils.DefaultClientScopes;
+import org.keycloak.models.utils.DefaultKeyProviders;
 import org.keycloak.models.utils.DefaultRequiredActions;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.RepresentationToModel;
@@ -83,6 +84,10 @@ public class RealmManager {
 
     public RealmModel getKeycloakAdminstrationRealm() {
         return getRealmByName(Config.getAdminRealm());
+    }
+
+    public static boolean isAdministrationRealm(RealmModel realm) {
+        return realm.getName().equals(Config.getAdminRealm());
     }
 
     public RealmModel getRealm(String id) {
@@ -438,6 +443,8 @@ public class RealmManager {
             RoleModel manageConsentRole = accountClient.addRole(AccountRoles.MANAGE_CONSENT);
             manageConsentRole.setDescription("${role_" + AccountRoles.MANAGE_CONSENT + "}");
             manageConsentRole.addCompositeRole(viewConsentRole);
+            RoleModel viewGroups = accountClient.addRole(AccountRoles.VIEW_GROUPS);
+            viewGroups.setDescription("${role_" + AccountRoles.VIEW_GROUPS + "}");
 
             KeycloakModelUtils.setupDeleteAccount(accountClient);
 
@@ -458,6 +465,7 @@ public class RealmManager {
                 accountConsoleClient.setProtocol(OIDCLoginProtocol.LOGIN_PROTOCOL);
 
                 accountConsoleClient.addScopeMapping(accountClient.getRole(AccountRoles.MANAGE_ACCOUNT));
+                accountConsoleClient.addScopeMapping(accountClient.getRole(AccountRoles.VIEW_GROUPS));
 
                 ProtocolMapperModel audienceMapper = new ProtocolMapperModel();
                 audienceMapper.setName(OIDCLoginProtocolFactory.AUDIENCE_RESOLVE);
@@ -769,5 +777,25 @@ public class RealmManager {
                 }
             }
         }
+    }
+
+    public void setDefaultsForNewRealm(RealmModel realm) {
+        // setup defaults
+        setupRealmDefaults(realm);
+        KeycloakModelUtils.setupDefaultRole(realm, Constants.DEFAULT_ROLES_ROLE_PREFIX + "-" + realm.getName().toLowerCase());
+        setupRealmAdminManagement(realm);
+        setupAccountManagement(realm);
+        setupBrokerService(realm);
+        setupAdminConsole(realm);
+        setupAdminConsoleLocaleMapper(realm);
+        setupAdminCli(realm);
+        setupAuthenticationFlows(realm);
+        setupRequiredActions(realm);
+        setupOfflineTokens(realm, null);
+        createDefaultClientScopes(realm);
+        setupAuthorizationServices(realm);
+        setupClientRegistrations(realm);
+        session.clientPolicy().setupClientPoliciesOnCreatedRealm(realm);
+        DefaultKeyProviders.createProviders(realm);
     }
 }

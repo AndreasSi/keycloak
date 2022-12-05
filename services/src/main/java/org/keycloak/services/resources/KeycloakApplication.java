@@ -19,8 +19,8 @@ package org.keycloak.services.resources;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
+import org.keycloak.common.Profile;
 import org.keycloak.common.crypto.CryptoIntegration;
-import org.keycloak.common.util.BouncyIntegration;
 import org.keycloak.common.util.Resteasy;
 import org.keycloak.common.util.StringPropertyReplacer;
 import org.keycloak.config.ConfigProviderFactory;
@@ -32,8 +32,9 @@ import org.keycloak.models.ModelDuplicateException;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserProvider;
-import org.keycloak.models.dblock.DBLockManager;
-import org.keycloak.models.dblock.DBLockProvider;
+import org.keycloak.models.locking.GlobalLock;
+import org.keycloak.models.locking.GlobalLockProvider;
+import org.keycloak.models.locking.LockAcquiringTimeoutException;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.PostMigrationEvent;
 import org.keycloak.models.utils.RepresentationToModel;
@@ -70,6 +71,7 @@ import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.StringTokenizer;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -101,9 +103,14 @@ public class KeycloakApplication extends Application {
 
             singletons.add(new RobotsResource());
             singletons.add(new RealmsResource());
-            singletons.add(new AdminRoot());
+            if (Profile.isFeatureEnabled(Profile.Feature.ADMIN_API)) {
+                singletons.add(new AdminRoot());
+            }
             classes.add(ThemeResource.class);
-            classes.add(JsResource.class);
+
+            if (Profile.isFeatureEnabled(Profile.Feature.JS_ADAPTER)) {
+                classes.add(JsResource.class);
+            }
 
             classes.add(KeycloakSecurityHeadersFilter.class);
             classes.add(KeycloakErrorHandler.class);
@@ -126,17 +133,27 @@ public class KeycloakApplication extends Application {
 
         ExportImportManager[] exportImportManager = new ExportImportManager[1];
 
+        // Release all locks acquired by currently used GlobalLockProvider if keycloak.globalLock.forceUnlock is equal
+        //   to true. This can be used to recover from a state where there are some stale locks that were not correctly
+        //   unlocked
+        if (Boolean.getBoolean("keycloak.globalLock.forceUnlock")) {
+            KeycloakModelUtils.runJobInTransaction(sessionFactory, new KeycloakSessionTask() {
+                @Override
+                public void run(KeycloakSession session) {
+                    GlobalLockProvider locks = session.getProvider(GlobalLockProvider.class);
+                    locks.forceReleaseAllLocks();
+                }
+            });
+        }
+
         KeycloakModelUtils.runJobInTransaction(sessionFactory, new KeycloakSessionTask() {
             @Override
             public void run(KeycloakSession session) {
-                DBLockManager dbLockManager = new DBLockManager(session);
-                dbLockManager.checkForcedUnlock();
-                DBLockProvider dbLock = dbLockManager.getDBLock();
-                dbLock.waitForLock(DBLockProvider.Namespace.KEYCLOAK_BOOT);
-                try {
+                GlobalLockProvider locks = session.getProvider(GlobalLockProvider.class);
+                try (GlobalLock l = locks.acquireLock(GlobalLock.Constants.KEYCLOAK_BOOT)) {
                     exportImportManager[0] = bootstrap();
-                } finally {
-                    dbLock.releaseLock();
+                } catch (LockAcquiringTimeoutException e) {
+                    throw new RuntimeException("Acquiring keycloak-boot lock failed.", e);
                 }
             }
         });
